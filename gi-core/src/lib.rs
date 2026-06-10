@@ -28,6 +28,16 @@ impl Status {
         }
     }
 
+    /// Sort key reflecting workflow order: `open` before `in_progress` before
+    /// `done`. Used to give `gi list` a stable, intuitive ordering.
+    pub fn rank(self) -> u8 {
+        match self {
+            Status::Open => 0,
+            Status::InProgress => 1,
+            Status::Done => 2,
+        }
+    }
+
     /// Parse a status from its canonical string. Unknown values yield `None`.
     pub fn parse(s: &str) -> Option<Status> {
         match s.trim() {
@@ -158,7 +168,9 @@ impl Issue {
             return Err(ParseError::UnterminatedFrontmatter);
         }
 
-        let id = id.filter(|s| !s.is_empty()).ok_or(ParseError::MissingField("id"))?;
+        let id = id
+            .filter(|s| !s.is_empty())
+            .ok_or(ParseError::MissingField("id"))?;
         let title = title
             .filter(|s| !s.is_empty())
             .ok_or(ParseError::MissingField("title"))?;
@@ -203,9 +215,9 @@ fn remainder_after_frontmatter(contents: &str) -> String {
 
 /// True if the text contains git conflict markers at the start of any line.
 fn has_conflict_markers(contents: &str) -> bool {
-    contents.lines().any(|l| {
-        l.starts_with("<<<<<<<") || l.starts_with("=======") || l.starts_with(">>>>>>>")
-    })
+    contents
+        .lines()
+        .any(|l| l.starts_with("<<<<<<<") || l.starts_with("=======") || l.starts_with(">>>>>>>"))
 }
 
 /// Derive a human-readable, filesystem-safe slug from an issue title.
@@ -303,8 +315,17 @@ mod tests {
     }
 
     #[test]
+    fn status_rank_orders_open_then_in_progress_then_done() {
+        assert!(Status::Open.rank() < Status::InProgress.rank());
+        assert!(Status::InProgress.rank() < Status::Done.rank());
+    }
+
+    #[test]
     fn missing_header_is_rejected() {
-        assert_eq!(Issue::parse("id: a1b2\n"), Err(ParseError::MissingFrontmatter));
+        assert_eq!(
+            Issue::parse("id: a1b2\n"),
+            Err(ParseError::MissingFrontmatter)
+        );
     }
 
     #[test]
