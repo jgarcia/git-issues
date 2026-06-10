@@ -1,0 +1,31 @@
+[[skill]]
+name = "grill-me"
+source = "mattpocock/skills"
+id = "mattpocock/skills:grill-me"
+rev = "aaf2453fbdfe7a15c07f11d861224f34ab4b53cb"
+hash = "sha256:49d49b8051154ded96ad77bc81e065fdd2704c1b062ad47fac5f09e682f22533"
+enabled_at = "2026-06-04"
+
+[[skill]]
+name = "handoff"
+source = "mattpocock/skills"
+id = "mattpocock/skills:handoff"
+rev = "aaf2453fbdfe7a15c07f11d861224f34ab4b53cb"
+hash = "sha256:c4d9291ed17c15554f25550adeb88e72ba15c4a9570476b59702085e59fcd39c"
+enabled_at = "2026-06-09"
+
+[[skill]]
+name = "to-issues"
+source = "mattpocock/skills"
+id = "mattpocock/skills:to-issues"
+rev = "aaf2453fbdfe7a15c07f11d861224f34ab4b53cb"
+hash = "sha256:df06a735a9c6fa1b4547a89df4d73a93b1bab621bf44a4db214625a58b1236dc"
+enabled_at = "2026-06-05"
+
+[[skill]]
+name = "to-prd"
+source = "mattpocock/skills"
+id = "mattpocock/skills:to-prd"
+rev = "aaf2453fbdfe7a15c07f11d861224f34ab4b53cb"
+hash = "sha256:966d7d2c0ab65ab5123e2da54cd1fef2fcba8090ea35c8621ac286919e2819fc"
+enabled_at = "2026-06-04"
