@@ -12,7 +12,11 @@ use clap::{Parser, Subcommand};
 use effects::{SystemEditor, SystemGit};
 
 #[derive(Parser)]
-#[command(name = "gi", version, about = "A decentralized, git-native issue tracker")]
+#[command(
+    name = "gi",
+    version,
+    about = "A decentralized, git-native issue tracker"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -26,6 +30,15 @@ enum Command {
         #[arg(required = true, num_args = 1..)]
         title: Vec<String>,
     },
+    /// List issues. Defaults to not-done (open + in progress).
+    List {
+        /// Include done issues alongside open and in-progress ones.
+        #[arg(long, conflicts_with = "done")]
+        all: bool,
+        /// Show only done issues.
+        #[arg(long)]
+        done: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -37,6 +50,17 @@ fn main() -> Result<()> {
             let title = title.join(" ");
             let created = commands::new(&SystemEditor, &SystemGit, &cwd, &title)?;
             println!("Created issue {} ({})", created.id, created.rel_path);
+        }
+        Command::List { all, done } => {
+            let filter = if done {
+                commands::Filter::Done
+            } else if all {
+                commands::Filter::All
+            } else {
+                commands::Filter::NotDone
+            };
+            let table = commands::list(&SystemGit, &cwd, filter)?;
+            println!("{table}");
         }
     }
 
