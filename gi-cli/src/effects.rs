@@ -28,6 +28,10 @@ pub trait Git {
     /// valid pool of assignees. Implementations should cache the derived set
     /// rather than re-running `git shortlog` on every command.
     fn committers(&self, repo_root: &Path) -> Result<Vec<Committer>>;
+
+    /// The current user's identity from `git config user.name` / `user.email`.
+    /// Used by `gi grab` to self-assign without a committer-validity check.
+    fn current_user(&self, repo_root: &Path) -> Result<Committer>;
 }
 
 /// Launches `$VISUAL`/`$EDITOR` (falling back to `vi`) on the given path,
@@ -74,6 +78,22 @@ impl SystemGit {
             bail!("git command failed: {}", stderr.trim());
         }
         Ok(())
+    }
+
+    /// Read a single git config value from the repo, returning `None` if unset.
+    fn config_get(&self, repo_root: &Path, key: &str) -> Result<Option<String>> {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(repo_root)
+            .args(["config", "--get", key])
+            .output()
+            .context("failed to run git")?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+        let val = String::from_utf8(output.stdout).context("git returned non-utf8 output")?;
+        let val = val.trim().to_string();
+        Ok(if val.is_empty() { None } else { Some(val) })
     }
 
     /// Run a read-only git command in `repo_root` and return its trimmed stdout,
@@ -165,5 +185,17 @@ impl Git for SystemGit {
         let _ = fs::write(&cache_path, format!("{head}\n{shortlog}"));
 
         Ok(parse_shortlog(&shortlog))
+    }
+
+    fn current_user(&self, repo_root: &Path) -> Result<Committer> {
+        let name = self.config_get(repo_root, "user.name")?.unwrap_or_default();
+        let email = self.config_get(repo_root, "user.email")?.unwrap_or_default();
+        if name.is_empty() && email.is_empty() {
+            anyhow::bail!(
+                "git user identity is not configured; \
+                 set `user.name` or `user.email` with `git config`"
+            );
+        }
+        Ok(Committer { name, email })
     }
 }

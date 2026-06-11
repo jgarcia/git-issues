@@ -191,6 +191,61 @@ pub fn assign(git: &dyn Git, cwd: &Path, id: &str, who: &str) -> Result<Assigned
     })
 }
 
+/// What `grab` produced, for reporting back to the user.
+pub struct Grabbed {
+    pub id: String,
+    /// Path to the issue file, relative to the repo root.
+    pub rel_path: String,
+    /// The current user's identity as stored in the assignee field.
+    pub assignee: String,
+}
+
+/// Self-assign an issue and move it to `in_progress`: the "I'm on it" verb.
+///
+/// Sets `assignee` to the current user (from `git config user.name` /
+/// `user.email`) and `status` to `in_progress`, then commits just that file.
+/// Unlike `assign`, grab bypasses the committer-validity check — the current
+/// user is always a valid self-assignee even on a fresh repo.
+pub fn grab(git: &dyn Git, cwd: &Path, id: &str) -> Result<Grabbed> {
+    let id = id.trim();
+    if id.is_empty() {
+        bail!("an issue id is required: `gi grab <id>`");
+    }
+
+    let repo_root = git.repo_root(cwd)?;
+    let issues_dir = repo_root.join(".issues");
+
+    let filename = find_issue_file(&issues_dir, id)?;
+    let abs_path = issues_dir.join(&filename);
+    let rel_path = format!(".issues/{filename}");
+
+    // Resolve the current user up front so a bad/missing identity fails before
+    // any file is touched.
+    let user = git.current_user(&repo_root)?;
+    let assignee = user.label().to_string();
+
+    let contents =
+        fs::read_to_string(&abs_path).with_context(|| format!("failed to read {rel_path}"))?;
+    let mut issue = Issue::parse(&contents).map_err(|e| anyhow::anyhow!("{rel_path}: {e}"))?;
+
+    issue.assignee = Some(assignee.clone());
+    issue.status = Status::InProgress;
+    fs::write(&abs_path, issue.to_file_string())
+        .with_context(|| format!("failed to write {}", abs_path.display()))?;
+
+    git.commit(
+        &repo_root,
+        &[&rel_path],
+        &format!("issue: grab {}", issue.id),
+    )?;
+
+    Ok(Grabbed {
+        id: issue.id,
+        rel_path,
+        assignee,
+    })
+}
+
 /// Find the lone `.issues/` file whose name carries `-<id>.md`. The id is the
 /// short hash that ends every issue filename, so a suffix match pins it down
 /// without parsing unrelated (possibly malformed) files. An absent `.issues/`,
