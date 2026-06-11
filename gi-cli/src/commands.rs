@@ -65,6 +65,94 @@ pub fn new(editor: &dyn Editor, git: &dyn Git, cwd: &Path, title: &str) -> Resul
     })
 }
 
+/// What `done` produced, for reporting back to the user.
+pub struct Closed {
+    pub id: String,
+    /// Path to the issue file, relative to the repo root.
+    pub rel_path: String,
+    /// True if the issue was already done; in that case no commit was made.
+    pub already_done: bool,
+}
+
+/// Close an issue: flip its `status` to `done` and commit just that one file
+/// with an `issue: close <id>` message. Locating an unknown id fails before any
+/// file is touched, so a bad id never produces a commit.
+///
+/// Re-closing an already-done issue is a no-op: it reports the state and skips
+/// the commit, rather than failing on git's "nothing to commit".
+pub fn done(git: &dyn Git, cwd: &Path, id: &str) -> Result<Closed> {
+    let id = id.trim();
+    if id.is_empty() {
+        bail!("an issue id is required: `gi done <id>`");
+    }
+
+    let repo_root = git.repo_root(cwd)?;
+    let issues_dir = repo_root.join(".issues");
+
+    let filename = find_issue_file(&issues_dir, id)?;
+    let abs_path = issues_dir.join(&filename);
+    let rel_path = format!(".issues/{filename}");
+
+    let contents = fs::read_to_string(&abs_path)
+        .with_context(|| format!("failed to read {rel_path}"))?;
+    let mut issue =
+        Issue::parse(&contents).map_err(|e| anyhow::anyhow!("{rel_path}: {e}"))?;
+
+    if issue.status == Status::Done {
+        return Ok(Closed {
+            id: issue.id,
+            rel_path,
+            already_done: true,
+        });
+    }
+
+    issue.status = Status::Done;
+    fs::write(&abs_path, issue.to_file_string())
+        .with_context(|| format!("failed to write {}", abs_path.display()))?;
+
+    git.commit(&repo_root, &[&rel_path], &format!("issue: close {}", issue.id))?;
+
+    Ok(Closed {
+        id: issue.id,
+        rel_path,
+        already_done: false,
+    })
+}
+
+/// Find the lone `.issues/` file whose name carries `-<id>.md`. The id is the
+/// short hash that ends every issue filename, so a suffix match pins it down
+/// without parsing unrelated (possibly malformed) files. An absent `.issues/`,
+/// no match, or — defensively — more than one match all fail with a clear
+/// error and no side effects.
+fn find_issue_file(issues_dir: &Path, id: &str) -> Result<String> {
+    let read_dir = match fs::read_dir(issues_dir) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            bail!("no issue with id `{id}` (no issues exist yet)");
+        }
+        Err(e) => {
+            return Err(e).with_context(|| format!("failed to read {}", issues_dir.display()));
+        }
+    };
+
+    let suffix = format!("-{id}.md");
+    let mut matches: Vec<String> = Vec::new();
+    for entry in read_dir {
+        let entry = entry.with_context(|| format!("failed to read {}", issues_dir.display()))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.ends_with(&suffix) {
+            matches.push(name);
+        }
+    }
+    matches.sort();
+
+    match matches.len() {
+        0 => bail!("no issue with id `{id}`"),
+        1 => Ok(matches.into_iter().next().unwrap()),
+        n => bail!("id `{id}` is ambiguous: it matches {n} issue files"),
+    }
+}
+
 /// Which slice of the backlog `gi list` renders.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Filter {
