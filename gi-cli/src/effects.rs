@@ -3,10 +3,12 @@
 //! traits lets command orchestration be driven with stand-ins, while the
 //! default implementations defer entirely to the user's environment.
 
+use std::fs;
 use std::path::Path;
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
+use gi_core::{parse_shortlog, Committer};
 
 /// Opens a file for the user to edit interactively.
 pub trait Editor {
@@ -21,6 +23,11 @@ pub trait Git {
     /// Stage and commit exactly `rel_paths` (relative to `repo_root`) with
     /// `message`. Other staged or in-flight work must not be swept in.
     fn commit(&self, repo_root: &Path, rel_paths: &[&str], message: &str) -> Result<()>;
+
+    /// The set of people who have authored commits reachable from `HEAD` — the
+    /// valid pool of assignees. Implementations should cache the derived set
+    /// rather than re-running `git shortlog` on every command.
+    fn committers(&self, repo_root: &Path) -> Result<Vec<Committer>>;
 }
 
 /// Launches `$VISUAL`/`$EDITOR` (falling back to `vi`) on the given path,
@@ -68,6 +75,22 @@ impl SystemGit {
         }
         Ok(())
     }
+
+    /// Run a read-only git command in `repo_root` and return its trimmed stdout,
+    /// or `None` if git exits non-zero (e.g. `rev-parse HEAD` before any commit).
+    fn capture(&self, repo_root: &Path, args: &[&str]) -> Result<Option<String>> {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(repo_root)
+            .args(args)
+            .output()
+            .context("failed to run git")?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+        let out = String::from_utf8(output.stdout).context("git returned non-utf8 output")?;
+        Ok(Some(out))
+    }
 }
 
 impl Git for SystemGit {
@@ -107,5 +130,40 @@ impl Git for SystemGit {
         commit.extend(rel_paths.iter().map(OsStr::new));
         self.run(Some(repo_root), &commit)?;
         Ok(())
+    }
+
+    /// Derive the committer set from `git shortlog -sne HEAD`, cached in
+    /// `.git/gi-committers` and keyed on the current `HEAD` sha. The set only
+    /// changes when new commits land, so as long as `HEAD` is unmoved we reuse
+    /// the cached shortlog instead of re-deriving it on every command. The cache
+    /// lives under `.git/`, so it is local and never tracked.
+    fn committers(&self, repo_root: &Path) -> Result<Vec<Committer>> {
+        // No commits yet means no authors — and nothing to key a cache on.
+        let head = match self.capture(repo_root, &["rev-parse", "HEAD"])? {
+            Some(h) => h.trim().to_string(),
+            None => return Ok(Vec::new()),
+        };
+
+        let cache_path = repo_root.join(".git").join("gi-committers");
+
+        // A cache whose first line matches the current HEAD is still valid; the
+        // remainder is the raw shortlog, re-parsed through the same core parser.
+        if let Ok(cached) = fs::read_to_string(&cache_path) {
+            if let Some((stored_head, shortlog)) = cached.split_once('\n') {
+                if stored_head == head {
+                    return Ok(parse_shortlog(shortlog));
+                }
+            }
+        }
+
+        let shortlog = self
+            .capture(repo_root, &["shortlog", "-sne", "HEAD"])?
+            .unwrap_or_default();
+
+        // Best-effort write: a failed cache update must not fail the command, it
+        // only costs us a re-derivation next time.
+        let _ = fs::write(&cache_path, format!("{head}\n{shortlog}"));
+
+        Ok(parse_shortlog(&shortlog))
     }
 }

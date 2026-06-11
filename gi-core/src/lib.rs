@@ -10,6 +10,9 @@ use std::fmt;
 use std::fs::File;
 use std::io::Read;
 
+pub mod identity;
+pub use identity::{parse_shortlog, resolve, Committer, Resolution};
+
 /// The lifecycle state of an issue — the three Kanban columns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {

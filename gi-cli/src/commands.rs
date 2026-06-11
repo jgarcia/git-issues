@@ -5,7 +5,7 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
-use gi_core::{new_hash, Issue, Status};
+use gi_core::{new_hash, resolve, Issue, Resolution, Status};
 
 use crate::effects::{Editor, Git};
 
@@ -116,6 +116,78 @@ pub fn done(git: &dyn Git, cwd: &Path, id: &str) -> Result<Closed> {
         id: issue.id,
         rel_path,
         already_done: false,
+    })
+}
+
+/// What `assign` produced, for reporting back to the user.
+pub struct Assigned {
+    pub id: String,
+    /// Path to the issue file, relative to the repo root.
+    pub rel_path: String,
+    /// The canonical assignee `<who>` resolved to.
+    pub assignee: String,
+}
+
+/// Assign an issue to a committer: set its `assignee` and commit just that file,
+/// leaving `status` untouched (the "this is yours" verb — it does not move the
+/// issue into progress).
+///
+/// `<who>` is resolved fuzzily against the repo's committers (by name or email).
+/// An unresolvable or ambiguous `<who>` is rejected before any file is written,
+/// so a bad assignee never produces a commit. Likewise an unknown id fails first.
+pub fn assign(git: &dyn Git, cwd: &Path, id: &str, who: &str) -> Result<Assigned> {
+    let id = id.trim();
+    if id.is_empty() {
+        bail!("an issue id is required: `gi assign <id> <who>`");
+    }
+    let who = who.trim();
+    if who.is_empty() {
+        bail!("an assignee is required: `gi assign <id> <who>`");
+    }
+
+    let repo_root = git.repo_root(cwd)?;
+    let issues_dir = repo_root.join(".issues");
+
+    // Pin the target file (validates the id) before deriving committers.
+    let filename = find_issue_file(&issues_dir, id)?;
+    let abs_path = issues_dir.join(&filename);
+    let rel_path = format!(".issues/{filename}");
+
+    // Resolve `<who>` against the (cached) committer set up front: an assignee
+    // that resolves to nobody — or to several people — fails here, with no write
+    // and no commit.
+    let committers = git.committers(&repo_root)?;
+    let assignee = match resolve(who, &committers) {
+        Resolution::Matched(c) => c.label().to_string(),
+        Resolution::NotFound => bail!(
+            "`{who}` matches no committer in this repository's history; \
+             assignees must be people who have committed here"
+        ),
+        Resolution::Ambiguous(hits) => {
+            let names: Vec<&str> = hits.iter().map(|c| c.label()).collect();
+            bail!("`{who}` is ambiguous; it matches {}", names.join(", "));
+        }
+    };
+
+    let contents =
+        fs::read_to_string(&abs_path).with_context(|| format!("failed to read {rel_path}"))?;
+    let mut issue = Issue::parse(&contents).map_err(|e| anyhow::anyhow!("{rel_path}: {e}"))?;
+
+    // Set the assignee; `status` is deliberately left as-is.
+    issue.assignee = Some(assignee.clone());
+    fs::write(&abs_path, issue.to_file_string())
+        .with_context(|| format!("failed to write {}", abs_path.display()))?;
+
+    git.commit(
+        &repo_root,
+        &[&rel_path],
+        &format!("issue: assign {} to {}", issue.id, assignee),
+    )?;
+
+    Ok(Assigned {
+        id: issue.id,
+        rel_path,
+        assignee,
     })
 }
 

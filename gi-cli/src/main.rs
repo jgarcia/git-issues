@@ -39,6 +39,14 @@ enum Command {
         #[arg(long)]
         done: bool,
     },
+    /// Assign an issue to a team member, leaving its status unchanged.
+    Assign {
+        /// The id (short hash) of the issue to assign.
+        id: String,
+        /// Who to assign it to: a name or email, matched fuzzily against the
+        /// repo's committers.
+        who: String,
+    },
     /// Close an issue: set its status to done and commit the change.
     Done {
         /// The id (short hash) of the issue to close.
@@ -66,6 +74,13 @@ fn main() -> Result<()> {
             };
             let table = commands::list(&SystemGit, &cwd, filter)?;
             println!("{table}");
+        }
+        Command::Assign { id, who } => {
+            let assigned = commands::assign(&SystemGit, &cwd, &id, &who)?;
+            println!(
+                "Assigned issue {} to {} ({})",
+                assigned.id, assigned.assignee, assigned.rel_path
+            );
         }
         Command::Done { id } => {
             let closed = commands::done(&SystemGit, &cwd, &id)?;
