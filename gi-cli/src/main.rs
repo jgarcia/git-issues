@@ -39,6 +39,11 @@ enum Command {
         #[arg(long)]
         done: bool,
     },
+    /// Close an issue: set its status to done and commit the change.
+    Done {
+        /// The id (short hash) of the issue to close.
+        id: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -61,6 +66,14 @@ fn main() -> Result<()> {
             };
             let table = commands::list(&SystemGit, &cwd, filter)?;
             println!("{table}");
+        }
+        Command::Done { id } => {
+            let closed = commands::done(&SystemGit, &cwd, &id)?;
+            if closed.already_done {
+                println!("Issue {} was already done ({})", closed.id, closed.rel_path);
+            } else {
+                println!("Closed issue {} ({})", closed.id, closed.rel_path);
+            }
         }
     }
 
