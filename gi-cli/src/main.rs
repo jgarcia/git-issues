@@ -39,6 +39,11 @@ enum Command {
         #[arg(long)]
         done: bool,
     },
+    /// Open the whole issue file in your editor; validate on save, then commit.
+    Edit {
+        /// The id (short hash) of the issue to edit.
+        id: String,
+    },
     /// Assign an issue to a team member, leaving its status unchanged.
     Assign {
         /// The id (short hash) of the issue to assign.
@@ -79,6 +84,14 @@ fn main() -> Result<()> {
             };
             let table = commands::list(&SystemGit, &cwd, filter)?;
             println!("{table}");
+        }
+        Command::Edit { id } => {
+            let edited = commands::edit(&SystemEditor, &SystemGit, &cwd, &id)?;
+            if edited.unchanged {
+                println!("Issue {} unchanged ({})", edited.id, edited.rel_path);
+            } else {
+                println!("Edited issue {} ({})", edited.id, edited.rel_path);
+            }
         }
         Command::Assign { id, who } => {
             let assigned = commands::assign(&SystemGit, &cwd, &id, &who)?;
