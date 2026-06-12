@@ -52,6 +52,11 @@ enum Command {
         /// The id (short hash) of the issue to close.
         id: String,
     },
+    /// Self-assign an issue and move it to in-progress.
+    Grab {
+        /// The id (short hash) of the issue to grab.
+        id: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -89,6 +94,13 @@ fn main() -> Result<()> {
             } else {
                 println!("Closed issue {} ({})", closed.id, closed.rel_path);
             }
+        }
+        Command::Grab { id } => {
+            let grabbed = commands::grab(&SystemGit, &cwd, &id)?;
+            println!(
+                "Grabbed issue {} for {} ({})",
+                grabbed.id, grabbed.assignee, grabbed.rel_path
+            );
         }
     }
 
