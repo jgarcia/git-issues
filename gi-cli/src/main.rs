@@ -3,6 +3,7 @@
 //! Issues are markdown files under `.issues/`, committed alongside your code.
 //! This binary is the CLI surface; the pure issue model lives in `gi-core`.
 
+mod board;
 mod commands;
 mod effects;
 
@@ -62,6 +63,8 @@ enum Command {
         /// The id (short hash) of the issue to grab.
         id: String,
     },
+    /// Open the read-only Kanban board (Open / In Progress / Done).
+    Board,
 }
 
 fn main() -> Result<()> {
@@ -114,6 +117,9 @@ fn main() -> Result<()> {
                 "Grabbed issue {} for {} ({})",
                 grabbed.id, grabbed.assignee, grabbed.rel_path
             );
+        }
+        Command::Board => {
+            commands::board(&SystemGit, &cwd)?;
         }
     }
 
