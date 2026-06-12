@@ -459,29 +459,29 @@ impl Filter {
     }
 }
 
-/// Read and validate every issue under `.issues/`, then render the matching
-/// ones as a `hash  status  who  title` table.
+/// Read and validate every issue under `.issues/`, returning them in
+/// deterministic (filename-sorted) order.
 ///
-/// This is the read path: each file is parsed through `gi-core`'s validating
-/// reader. If *any* file is malformed — unknown status, missing field, leftover
-/// git conflict markers — the command fails and reports every offending file,
-/// rather than silently dropping it from the listing.
-pub fn list(git: &dyn Git, cwd: &Path, filter: Filter) -> Result<String> {
+/// This is the shared **read path** behind both `gi list` and `gi board`: each
+/// file is parsed through `gi-core`'s validating reader, and if *any* file is
+/// malformed — unknown status, missing field, leftover git conflict markers —
+/// the load fails and reports every offending file, rather than silently
+/// dropping it from the view. A missing `.issues/` directory (e.g. before the
+/// first `gi new`) is an empty backlog, not an error.
+pub fn load_issues(git: &dyn Git, cwd: &Path) -> Result<Vec<Issue>> {
     let repo_root = git.repo_root(cwd)?;
     let issues_dir = repo_root.join(".issues");
 
-    // No `.issues/` yet (e.g. before the first `gi new`) is an empty backlog,
-    // not an error.
     let read_dir = match fs::read_dir(&issues_dir) {
         Ok(rd) => rd,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(empty_listing()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => {
             return Err(e).with_context(|| format!("failed to read {}", issues_dir.display()));
         }
     };
 
     // Collect `.md` filenames up front and sort them so both the error report
-    // and (as a tiebreak) the rendered table are deterministic.
+    // and (as a tiebreak) the rendered output are deterministic.
     let mut names: Vec<String> = Vec::new();
     for entry in read_dir {
         let entry = entry.with_context(|| format!("failed to read {}", issues_dir.display()))?;
@@ -514,6 +514,14 @@ pub fn list(git: &dyn Git, cwd: &Path, filter: Filter) -> Result<String> {
         );
     }
 
+    Ok(issues)
+}
+
+/// Read and validate every issue under `.issues/`, then render the matching
+/// ones as a `hash  status  who  title` table.
+pub fn list(git: &dyn Git, cwd: &Path, filter: Filter) -> Result<String> {
+    let issues = load_issues(git, cwd)?;
+
     let mut rows: Vec<&Issue> = issues.iter().filter(|i| filter.admits(i.status)).collect();
     // Workflow order, then title, then id for a stable, intuitive listing.
     rows.sort_by(|a, b| {
@@ -533,6 +541,15 @@ pub fn list(git: &dyn Git, cwd: &Path, filter: Filter) -> Result<String> {
 /// The message shown when no issues match the current filter.
 fn empty_listing() -> String {
     "No issues.".to_string()
+}
+
+/// Launch the read-only Kanban board: load and validate every issue (the same
+/// read path as `gi list`), then hand them to the interactive TUI. The board
+/// itself performs no mutations — every state change still goes through the CLI
+/// verbs — so this returns only once the user quits.
+pub fn board(git: &dyn Git, cwd: &Path) -> Result<()> {
+    let issues = load_issues(git, cwd)?;
+    crate::board::run(issues)
 }
 
 /// Render issues as a left-aligned `hash  status  who  title` table with a
