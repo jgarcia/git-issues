@@ -5,7 +5,7 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
-use gi_core::{new_hash, resolve, Issue, Resolution, Status};
+use gi_core::{new_hash, resolve, Committer, Issue, Resolution, Status};
 
 use crate::effects::{Editor, Git};
 
@@ -244,6 +244,163 @@ pub fn grab(git: &dyn Git, cwd: &Path, id: &str) -> Result<Grabbed> {
         rel_path,
         assignee,
     })
+}
+
+/// What `edit` produced, for reporting back to the user.
+pub struct Whole {
+    pub id: String,
+    /// Path to the issue file, relative to the repo root.
+    pub rel_path: String,
+    /// True if the save left the issue semantically unchanged; in that case no
+    /// commit was made (avoids git's "nothing to commit").
+    pub unchanged: bool,
+}
+
+/// Open the whole issue file — frontmatter + body — in `$EDITOR`, and on save
+/// validate the frontmatter (known status, resolvable assignee). An invalid save
+/// reopens the editor with the error prepended as a `# gi:` banner so the user's
+/// in-progress edits are preserved while they fix it; a valid save is normalized,
+/// committed scoped to that one file, and reported.
+///
+/// To avoid spinning forever against a non-interactive `$EDITOR`, an invalid save
+/// that left the file byte-for-byte unchanged aborts with the error instead of
+/// reopening.
+pub fn edit(editor: &dyn Editor, git: &dyn Git, cwd: &Path, id: &str) -> Result<Whole> {
+    let id = id.trim();
+    if id.is_empty() {
+        bail!("an issue id is required: `gi edit <id>`");
+    }
+
+    let repo_root = git.repo_root(cwd)?;
+    let issues_dir = repo_root.join(".issues");
+
+    let filename = find_issue_file(&issues_dir, id)?;
+    let abs_path = issues_dir.join(&filename);
+    let rel_path = format!(".issues/{filename}");
+
+    // Resolve assignees against the (cached) committer set, just like `assign`.
+    let committers = git.committers(&repo_root)?;
+
+    // The file as it stood before any editing, used to detect a no-op save: a
+    // valid file that parses to the same normalized form was not really changed.
+    let original = fs::read_to_string(&abs_path)
+        .with_context(|| format!("failed to read {rel_path}"))?;
+    let original_normalized = Issue::parse(&original).ok().map(|i| i.to_file_string());
+
+    loop {
+        let before = fs::read_to_string(&abs_path)
+            .with_context(|| format!("failed to read {rel_path}"))?;
+
+        editor.edit(&abs_path)?;
+
+        let after = fs::read_to_string(&abs_path)
+            .with_context(|| format!("failed to read {rel_path}"))?;
+
+        // Strip any banner we injected on a previous round before validating, so
+        // our own error lines never become part of the issue.
+        let cleaned = strip_banner(&after);
+
+        match validate_frontmatter(&cleaned, &committers) {
+            Ok(issue) => {
+                let normalized = issue.to_file_string();
+
+                // A save that round-trips to the original normalized form changed
+                // nothing meaningful: skip the commit rather than fail on an empty
+                // one, but still leave the file in canonical form.
+                if original_normalized.as_deref() == Some(normalized.as_str()) {
+                    if after != normalized {
+                        fs::write(&abs_path, &normalized)
+                            .with_context(|| format!("failed to write {}", abs_path.display()))?;
+                    }
+                    return Ok(Whole {
+                        id: issue.id,
+                        rel_path,
+                        unchanged: true,
+                    });
+                }
+
+                // Persist the normalized form (canonical frontmatter, banner gone)
+                // and commit just this file.
+                fs::write(&abs_path, &normalized)
+                    .with_context(|| format!("failed to write {}", abs_path.display()))?;
+                git.commit(&repo_root, &[&rel_path], &format!("issue: edit {}", issue.id))?;
+                return Ok(Whole {
+                    id: issue.id,
+                    rel_path,
+                    unchanged: false,
+                });
+            }
+            Err(err) => {
+                // A non-interactive editor that changed nothing would loop forever;
+                // strip any banner back out and surface the error instead.
+                if after == before {
+                    if cleaned != after {
+                        fs::write(&abs_path, &cleaned)
+                            .with_context(|| format!("failed to write {}", abs_path.display()))?;
+                    }
+                    bail!("{rel_path}: {err}");
+                }
+                // Reopen with the error shown, keeping the user's edits intact.
+                fs::write(&abs_path, format!("{}{cleaned}", banner(&err)))
+                    .with_context(|| format!("failed to write {}", abs_path.display()))?;
+            }
+        }
+    }
+}
+
+/// Validate a candidate issue file: it must parse, and any non-empty assignee
+/// must resolve to exactly one committer. On success the assignee is canonicalized
+/// to that committer's label. Errors are returned as user-facing strings.
+fn validate_frontmatter(
+    contents: &str,
+    committers: &[Committer],
+) -> std::result::Result<Issue, String> {
+    let mut issue = Issue::parse(contents).map_err(|e| e.to_string())?;
+    if let Some(who) = issue.assignee.clone() {
+        match resolve(&who, committers) {
+            Resolution::Matched(c) => issue.assignee = Some(c.label().to_string()),
+            Resolution::NotFound => {
+                return Err(format!(
+                    "`{who}` matches no committer in this repository's history; \
+                     assignees must be people who have committed here"
+                ));
+            }
+            Resolution::Ambiguous(hits) => {
+                let names: Vec<&str> = hits.iter().map(|c| c.label()).collect();
+                return Err(format!("`{who}` is ambiguous; it matches {}", names.join(", ")));
+            }
+        }
+    }
+    Ok(issue)
+}
+
+/// The comment prefix used for the reopen-with-error banner. Lines carrying it
+/// are injected by `gi edit` and stripped before validating, so they never reach
+/// a committed issue.
+const BANNER_PREFIX: &str = "# gi:";
+
+/// Build the error banner prepended to the file when a save fails validation.
+fn banner(err: &str) -> String {
+    format!(
+        "{BANNER_PREFIX} your edit could not be saved:\n\
+         {BANNER_PREFIX}   {err}\n\
+         {BANNER_PREFIX} fix the problem below, then save. these `{BANNER_PREFIX}` lines are ignored.\n"
+    )
+}
+
+/// Remove a leading run of `# gi:` banner lines, returning the rest unchanged.
+/// A real issue file begins with `---`, so any banner only ever appears at the
+/// very top — we stop at the first line that is not ours.
+fn strip_banner(contents: &str) -> String {
+    let mut idx = 0;
+    for line in contents.split_inclusive('\n') {
+        if line.starts_with(BANNER_PREFIX) {
+            idx += line.len();
+        } else {
+            break;
+        }
+    }
+    contents[idx..].to_string()
 }
 
 /// Find the lone `.issues/` file whose name carries `-<id>.md`. The id is the
