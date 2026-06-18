@@ -3,5 +3,12 @@ name = "gi-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Core library for gi, a decentralized git-based issue tracker that stores issues as markdown files alongside your code."
+keywords = ["issue-tracker", "git", "issues", "kanban"]
+categories = ["development-tools"]
 
 [dependencies]
