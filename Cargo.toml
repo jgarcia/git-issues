@@ -6,3 +6,7 @@ resolver = "2"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
+repository = "https://github.com/jgarcia/git-issues"
+homepage = "https://github.com/jgarcia/git-issues"
+authors = ["Joel G Martinez <joel@jgarciam.net>"]
+rust-version = "1.74"
